@@ -1,15 +1,21 @@
 const COLUMN_STATE_SIZE: usize = 130;
 const LINE_END: usize = 128;
 
+#[derive(Debug, Default, Clone, Copy)]
+struct FsmAction {
+    next: usize,
+    offset: i32,
+}
+
 #[derive(Debug)]
 struct FsmColumn {
-    column: [usize; COLUMN_STATE_SIZE],
+    column: [FsmAction; COLUMN_STATE_SIZE],
 }
 
 impl FsmColumn {
     fn new() -> Self {
         Self {
-            column: [0; COLUMN_STATE_SIZE],
+            column: [FsmAction::default(); COLUMN_STATE_SIZE],
         }
     }
 }
@@ -28,22 +34,55 @@ impl Regex {
             match c {
                 '$' => {
                     let mut column = FsmColumn::new();
-                    column.column[LINE_END] = fsm.row.len() + 1;
+                    column.column[LINE_END] = FsmAction {
+                        next: fsm.row.len() + 1,
+                        offset: 1,
+                    };
                     fsm.row.push(column);
                 }
 
                 '.' => {
                     let mut column = FsmColumn::new();
                     for i in 0..127 {
-                        column.column[i] = fsm.row.len() + 1;
+                        column.column[i] = FsmAction {
+                            next: fsm.row.len() + 1,
+                            offset: 1,
+                        };
                     }
 
                     fsm.row.push(column);
                 }
 
+                '*' => {
+                    let n = fsm.row.len();
+                    for v in fsm
+                        .row
+                        .last_mut()
+                        .unwrap()
+                        .column
+                        .first_chunk_mut::<129>()
+                        .unwrap()
+                        .iter_mut()
+                    {
+                        // I --> "ba*b$"
+                        // I --> b --> a } ---> b ---> $
+                        //              ^
+                        if v.next == n {
+                            v.next = n - 1;
+                        } else if v.next == 0 {
+                            v.next = n;
+                            v.offset = 0;
+                        }
+                    }
+                }
+
                 _ => {
                     let mut column = FsmColumn::new();
-                    column.column[c as usize] = fsm.row.len() + 1;
+                    column.column[c as usize] = FsmAction {
+                        next: fsm.row.len() + 1,
+                        offset: 1,
+                    };
+
                     fsm.row.push(column);
                 }
             }
@@ -54,27 +93,38 @@ impl Regex {
 
     fn find(&self, query: &str) -> bool {
         let mut state: usize = 1;
+        let mut head: usize = 0;
 
-        for c in query.chars() {
-            if state == 0 && self.row[state].column[c as usize] == 0 {
-                return false;
-            }
+        let query = query.chars().collect::<Vec<_>>();
 
-            state = self.row[state].column[c as usize];
+        while 0 < state && state < self.row.len() && head < query.len() {
+            let c = query[head];
+
+            let fsm_action = self.row[state].column[c as usize];
+
+            state = fsm_action.next;
+            head = head + fsm_action.offset as usize;
         }
 
-        if self.row[state].column[LINE_END] == 0 {
+        if state == 0 {
             return false;
         }
 
-        true
+        while state > 0 && state < self.row.len() {
+            state = self.row[state].column[LINE_END].next;
+        }
+
+        state >= self.row.len()
     }
 
     fn dump(&self) {
         for i in 0..COLUMN_STATE_SIZE {
             print!("{i:03?} => ");
             for r in &self.row {
-                print!(" {}", r.column[i as usize]);
+                print!(
+                    " ({} {})",
+                    r.column[i as usize].next, r.column[i as usize].offset
+                );
             }
             println!();
         }
@@ -82,11 +132,11 @@ impl Regex {
 }
 
 fn main() {
-    let regex_q = "ab.$";
+    let regex_q = ".c$";
     let regex = Regex::compile(regex_q);
     regex.dump();
 
-    let queries = vec!["ab", "abc", "abd", "abb", "hello"];
+    let queries = vec!["bbbbbbbc", "abc", "bc", "cbc", "abd", "abb", "hello"];
 
     println!("Regex: {}", regex_q);
     for query in queries {
